@@ -1,10 +1,6 @@
 % PFC_competition.m
 % model assumption: single-layer E/I network
 
-% Path to mechanism files, get_PFC_1layer.m, and get_PFC_cell.m
-model_dir='/home/jason/models/dynasim/mechanisms/JSS_PFC';
-cd(model_dir);
-
 TargetPop='Ed'; % name of population(s) to stimulate (for inputs and recurrent connections Es->Ed)
 OutputPop='Es'; % name of population to analyze (for post-simulation analysis)
 EiPop='Es';     % excitatory population input compartment for E/I connectivity
@@ -39,6 +35,7 @@ input_def={'input(V)=iPoisson(V)+iBurst(V); monitor input,iBurst,iPoisson; onset
            'baseline=0; dcAMPA1=0; acAMPA1=0; fAMPA1=0; phiAMPA1=0; tauAMPA=2; kick=1; ramp_dc_flag1=0; ramp_ac_flag1=0;';
            'fBURST1=0; widthBURST1=10; nspksBURST1=100; dcBURST1=0; minIBI=10; meanIBI=100; tauBURST=2; shared_sources_flag=0; num_sources=1;';
            };
+          % 'iPoissonNMDA(V)=-gNMDA.*sNMDA(k,:).*(1.50265./(1+0.33*exp(V./(-16)))).*(V-ENMDA); ENMDA=0; gNMDA=0;';
 state_equations=['dV/dt=(@current-input(V)+Iapp*(t>onset&t<offset))./Cm; Cm=1; Iapp=0; V(0)=-65;' input_def{:}];
 input_parameters={}; % input and biophysical parameters (key/value pairs)
 
@@ -80,25 +77,258 @@ L=[IPop '->' IPop];       % FS->FS
 spec=ApplyModifications(spec,{L,'netcon',Kii;L,'gGABA',gii;L,'tauGABA',tauGABA});
 
 % -------------------------------------------------------------------------
-% simulation controls
+%% parameter tuning for default values
+
+% 1. tune input->Ed
+s=spec;
+s.populations(3).size=0;
+gAMPA=1e-3; f=30; w=10; nspks=50; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0; onset=25; 
+mods={'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1};
+% 1.1 VARY gAMPA with BURST only:
+tspan=[0 200]; vary={'Ed','gAMPA',[0 1e-4 1e-3 1e-2]};
+tspan=[0 2000]; vary={'Ed','gAMPA',[1e-3 1e-2 1e-1]};
+  % as gAMPA(Ed)=.01 to .1, Es has a double-spike for every spike in Ed
+  % at gAMPA(Ed)=.001, Es transitions from sync to async to antiphase-sync
+tspan=[0 5000]; vary={'Ed','gAMPA',[.75e-3 1e-3]};
+  % gAMPA=.001 antiphase-sync persists while .0075 remains async
+tspan=[0 10000]; vary={'Ed','gAMPA',[.75e-3]};
+  % adaptation continues throughout; ends at 2Hz
+% 1.2 determine baseline: VARY gAMPA with POISSON (and BURST or not):
+tspan=[0 200]; vary={'Ed','gAMPA',[.75e-3];'Ed','dcAMPA1',[0 1 10];'Ed','nspksBURST1',[0 1 10]};
+tspan=[0 200]; vary={'Ed','gAMPA',[.75e-3];'Ed','dcAMPA1',[0 250 500];'Ed','nspksBURST1',[0]};
+tspan=[0 200]; vary={'Ed','gAMPA',[.75e-3];'Ed','dcAMPA1',[0 1e3 1e4];'Ed','nspksBURST1',[0]};
+  % dcAMPA=1e3 is somewhat sparse and async
+tspan=[0 2000]; vary={'Ed','gAMPA',[.75e-3];'Ed','dcAMPA1',[750 1000];'Ed','nspksBURST1',[0]};
+  % dcAMPA=750Hz: spiking stops after 1sec
+tspan=[0 5000]; vary={'Ed','gAMPA',[.75e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+  % dcAMPA=1000Hz: spiking stops after 2sec
+tspan=[0 10000]; vary={'Ed','gAMPA',[1.5e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+d=SimulateModel(ApplyModifications(s,mods),'tspan',tspan,'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+PlotData(d,'plot_type','rastergram');
+PlotData(d,'variable',{'Ed_iBurst','Ed_iPoisson'})
+if 1
+  s.populations(1).size=1;
+  s.populations(2).size=1;
+  mods=cat(1,mods,{'(Ed,Es)','size',1;'Es->Ed','netcon',1});
+  tspan=[0 30000]; vary={'Ed','gAMPA',[1.5e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+  % firing rate reached 5Hz steady state after 5sec
+  % this is due to the slow inactivation of iNaP
+  PlotData(d,'variable',{'Es_DS00iNaP_h'})
+  tspan=[0 20000]; vary={'(Ed,Es)','wtauHVA',[50 420/3 420 1000];'Ed','gAMPA',[1.5e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+  tspan=[0 5000]; vary={'(Ed,Es)','htaunap',[.5 1 2];'Ed','gAMPA',[1.5e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+  PlotFR(d(1)); PlotFR(d(2)); PlotFR(d(end));
+  % with htaunap=1, steady-state firing is reached in 2sec
+  % with htaunap=.5, steady-state firing is reached in 1sec
+  % the default value for the js PY model has been updated to htaunap=.5
+  tspan=[0 10000]; vary={'Ed','gAMPA',[.75e-3 1e-3 1.5e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+  tspan=[0 30000]; vary={'Ed','gAMPA',[1e-3];'Ed','dcAMPA1',[1000];'Ed','nspksBURST1',[0]};
+  tspan=[0 20000]; vary={'Ed','gAMPA',[1e-3];'Ed','baseline',[1000];'Ed','nspksBURST1',[0]};
+  % Def: BASELINE (Poisson): gAMPA=.001, baseline=1000Hz, produces FR=.5-2Hz (steady-state after 1sec)
+  tspan=[0 2000]; vary={'Ed','gAMPA',[1e-3];'Ed','baseline',[1000];'Ed','nspksBURST1',[0]};
+  d=SimulateModel(ApplyModifications(s,mods),'tspan',tspan,'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+  PlotData(d,'plot_type','rastergram');
+  PlotFR(d(1));
+end
+% 1.3 Determine burst stimulus on top of baseline activity
+s=spec;
+s.populations(1).size=1;
+s.populations(2).size=1;
+s.populations(3).size=0;
+gAMPA=1e-3; baseline=1000; onset=1500; f=30; w=10; nspks=10; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+mods={'(Ed,Es)','size',1;'Es->Ed','netcon',1;'Ed','baseline',baseline;'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1};
+% VARY sync (w) and # spikes per burst (nspks):
+tspan=[0 3000]; vary={'Ed','nspksBURST1',[0 50];'Ed','widthBURST1',[10]};
+tspan=[0 3000]; vary={'Ed','nspksBURST1',[0 50];'Ed','widthBURST1',[10];'Ed','onset',[0 1000]};
+  % spikes on every cycle whether onset at 0 or steady-state
+tspan=[0 3000]; vary={'Ed','nspksBURST1',[0 10 20 30 40 50];'Ed','widthBURST1',[10]};
+  % misses many cycles when n=10; misses some when n=40; none when n=50
+tspan=[0 3000]; vary={'Ed','nspksBURST1',[10 50];'Ed','widthBURST1',[2 10]};
+tspan=[0 3000]; vary={'Ed','nspksBURST1',[10 30 50];'Ed','widthBURST1',[1 2 10 15]};
+  % for nspks=10, w=1 produces more spiking than w=15; both produce spiking
+  % on every cycle when nspks=30.
+% VARY (freq,minIBI,meanIBI):
+tspan=[0 3000]; vary={'Ed','fBURST1',[10 30 50];'Ed','widthBURST1',[1 15];'Ed','nspksBURST1',10};
+  % interesting; higher sync matches all freqs; smaller diffs when less sync
+% VARY (dcBURST,dcAMPA,acAMPA): 
+% ...
+d=SimulateModel(ApplyModifications(s,mods),'tspan',tspan,'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+PlotData(d,'plot_type','rastergram');
+PlotData(d,'variable',{'Ed_iBurst','Ed_iPoisson'})
+
+% BASELINE (Poisson): gAMPA=.001, baseline=1000Hz, produces FR=.5-2Hz (steady-state after 1-2sec)
+% STIMULUS (Bursts):  gAMPA=.001, nspks=10, f=30, w=(1 vs 15)
+% Time-to-steady-state: 1-2sec
+% NOTE: balance steady and within-burst: dcAMPA ~ (nspks/w)
+  % tspan=[0 3000]; vary={'Ed','nspksBURST1',[10 30];'Ed','widthBURST1',[1 15]};
+  % tspan=[0 3000]; vary={'Ed','fBURST1',[10 30 50];'Ed','widthBURST1',[1 15];'Ed','nspksBURST1',10};
+
+% 2. tune g(E->I) - sync E
+f=30; w=10; nspks=50; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+mods={'Ed','gAMPA',1e-3;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1};
+vary={'Es->FS','gAMPA',[.001 .004 .007 .01];'Es->FS','gNMDA',[.001 .004 .007 .01]};
+vary={'Es->FS','gAMPA',[.001 .002 .003 .004];'Es->FS','gNMDA',[0]};
+  % given sync E, gAMPA(Es->FS)=.004 causes FS spiking but not .003 (given no FS noise)
+vary={'Es->FS','gAMPA',[0];'Es->FS','gNMDA',[.005 .01 .025 .05 .1]};
+vary={'Es->FS','gAMPA',[0];'Es->FS','gNMDA',[.01 .015 .02 .025 .03]};
+  % given sync E, gNMDA(Es->FS)=.02 causes FS spiking but not .015 (given no FS noise)
+d=SimulateModel(ApplyModifications(spec,mods),'tspan',[0 200],'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+PlotData(d,'plot_type','rastergram');
+
+% network test:
+gAMPA=1e-3; baseline=1000; onset=1500; f=30; w=10; nspks=10; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+mods={'Ed','baseline',baseline;'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1;'Es->FS','gAMPA',.004;'Es->FS','gNMDA',0};
+tspan=[0 3000]; vary={'Ed','widthBURST1',[1 15]};
+tspan=[0 3000]; vary={'Ed','widthBURST1',[.5 1 15];'Ed','nspksBURST1',7.5};
+d=SimulateModel(ApplyModifications(spec,mods),'tspan',tspan,'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+PlotData(d,'plot_type','rastergram');
+PlotFR(d);
+
+% tune g(Es->Ed)
+% ...
+
+% tune g(FS->Es) and g(E->I) - async E
+gAMPA=1e-3; baseline=1000; onset=1500; f=30; w=10; nspks=10; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+mods={'Ed','baseline',baseline;'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1;'Es->FS','gAMPA',.004;'Es->FS','gNMDA',0};
+tspan=[0 200]; vary={'FS->Es','gGABA',[0 .002 .004 .01];'Es->FS','gAMPA',[.001 .004 .007 .01];'Es->FS','gNMDA',[0];'Ed','widthBURST1',[1]};
+tspan=[0 200]; vary={'FS->Es','gGABA',[.01 .02];'Es->FS','gAMPA',[.01 .02];'Es->FS','gNMDA',[0];'Ed','widthBURST1',[1]};
+
+% tspan=[0 2000]; vary={'FS->Es','gGABA',[0 .002 .004 .01];'Es->FS','gAMPA',[.001 .004 .007 .01];'Es->FS','gNMDA',[0];'Ed','widthBURST1',[1]};
+d=SimulateModel(ApplyModifications(spec,mods),'tspan',tspan,'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+PlotData(d,'plot_type','rastergram');
+PlotFR(d);
+
+
+% -------------------------------------------------------------------------
+%% frequency-tuning profile
+% goal: sparse spiking at resonance | low sync, fast taum
+gGABAie=.02; gAMPAei=.02; gAMPA=1e-3; baseline=1000; onset=1500; f=30; w=10; nspks=10; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+mods={'Ed','baseline',baseline;'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',gGABAie;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1;'Es->FS','gAMPA',gAMPAei;'Es->FS','gNMDA',0};
+tspan=[0 500]; vary={'Ed','fBURST1',[10:10:60];'Ed','widthBURST1',.5;'Ed','nspksBURST1',10;'Ed','onset',0};
+tspan=[0 500]; vary={'Ed','gAMPA',5e-3;'Ed','fBURST1',[10:10:60];'Ed','widthBURST1',.5;'Ed','nspksBURST1',10;'Ed','onset',0};
+tspan=[0 500]; vary={'Ed','gAMPA',1.5e-3;'Ed','fBURST1',[20:10:80];'Ed','widthBURST1',.5;'Ed','nspksBURST1',10;'Ed','onset',0};
+tspan=[0 500]; vary={'Ed','gAMPA',1.5e-3;'Ed','fBURST1',[20:10:80];'Ed','widthBURST1',.1;'Ed','nspksBURST1',10;'Ed','onset',0};
+
+gGABAie=.03; gAMPAei=.03; gAMPA=1.5e-3; baseline=1000; onset=1000; f=30; w=10; nspks=10; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+mods={'Ed','baseline',baseline;'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',gGABAie;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1;'Es->FS','gAMPA',gAMPAei;'Es->FS','gNMDA',0};
+tspan=[0 2000]; ws=[.1 15]; freqs=[20:10:80]; vary={'Ed','fBURST1',freqs;'Ed','widthBURST1',ws};
+data=SimulateModel(ApplyModifications(spec,mods),'tspan',tspan,'solver','rk1','dt',.01,'vary',vary,'compile_flag',1,'verbose_flag',1);
+PlotData(data,'plot_type','rastergram');
+dat=SelectData(data,'time_limits',[onset tspan(2)]);
+PlotData(dat,'variable',{'Es_V'},'plot_type','power','xlim',[0 100]); 
+PlotFR(dat);
+dat1=SelectData(dat,'varied',{'Ed','widthBURST1',ws(1)});
+dat2=SelectData(dat,'varied',{'Ed','widthBURST1',ws(2)});
+PlotFR(dat1);
+PlotFR(dat2);
+
+p=freqs;
+dat=CalcFR(dat1,'bin_size',30,'bin_shift',10);
+gating=arrayfun(@(x)mean(x.model.fixed_variables.Ed_s1b(:)),dat);
+input=cellfun(@(x)mean(-x(:)),{dat.Ed_input});
+output=cellfun(@(x)mean(x(:)),{dat.Es_V_FR});
+figure('position',[190 420 1430 420]); 
+plot(p,output./input,'b','linewidth',3); 
+hold on
+dat=CalcFR(dat2,'bin_size',30,'bin_shift',10);
+gating=arrayfun(@(x)mean(x.model.fixed_variables.Ed_s1b(:)),dat);
+input=cellfun(@(x)mean(-x(:)),{dat.Ed_input});
+output=cellfun(@(x)mean(x(:)),{dat.Es_V_FR});
+plot(p,output./input,'r','linewidth',3); xlabel('1/sync'); ylabel('output/input');
+legend(cellfun(@(x)['burst width=' num2str(x)],num2cell(ws),'uni',0));
+xlabel('burst frequency [Hz]'); ylabel('output/input [(spks/sec)/uA]');
+ylim([0 50])
+
+figure('position',[190 420 1430 420]); 
+subplot(1,4,1); plot(input,output,'o--'); xlabel('input'); ylabel('output');
+subplot(1,4,2); plot(gating,input,'o--'); xlabel('gating'); ylabel('input');
+subplot(1,4,3); plot(p,input,'o--'); xlabel('1/sync'); ylabel('input');
+subplot(1,4,4); plot(p,output,'o--'); xlabel('1/sync'); ylabel('output');
+
+% check that <I(t)> and/or <ginp(t)> is constant across sims
+
+% tspan=[0 3000]; vary={'Ed','widthBURST1',[.5 1 15];'Ed','nspksBURST1',7.5};
+
+tspan=[0 3000]; dt=.01; solver='rk1'; compile_flag=1; save_data_flag=1;
+study_dir='study_vary_freq_sync_1';
+cluster_flag=1; plot_functions={@PlotData,@PlotData,@PlotFR};
+plot_options={{'plot_type','rastergram'},{'plot_type','power','xlim',[0 100]},{'threshold',-10}};%,'bin_size',30,'bin_shift',10
+simulator_options={'save_data_flag',save_data_flag,'study_dir',study_dir,'tspan',tspan,'solver',solver,'dt',dt,'compile_flag',compile_flag,'verbose_flag',1,'cluster_flag',cluster_flag,'plot_functions',plot_functions,'plot_options',plot_options};
+% gGABAie=.03; gAMPAei=.03; gAMPA=1.5e-3; baseline=1000; onset=1000; f=30; w=10; nspks=10; minIBI=max(w); meanIBI=2*minIBI; dcBURST1=0; dcAMPA1=0; acAMPA1=0;
+% mods={'Ed','baseline',baseline;'Ed','gAMPA',gAMPA;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',gGABAie;'Ed','onset',onset;'Ed','dcBURST1',dcBURST1;'Ed','dcAMPA1',dcAMPA1;'Ed','acAMPA1',acAMPA1;'Es->FS','gAMPA',gAMPAei;'Es->FS','gNMDA',0};
+% ws=[.1 15]; freqs=[20:10:80]; vary={'Ed','fBURST1',freqs;'Ed','widthBURST1',ws};
+[~,studyinfo]=SimulateModel(ApplyModifications(spec,mods),'vary',vary,simulator_options{:});
+data=ImportData(studyinfo);
+PlotData(data,'plot_type','rastergram');
+
+
+% ...
+
+% -------------------------------------------------------------------------
+%% synchrony-tuning profile
+% 1. goal: dense spiking when sync, sparse when not sync | f=fr(resonance), fast taum
+
+% check that <I(t)> and/or <ginp(t)> is constant across sims
+
+% ...
+
+% 2. goal: show shift in tuning curve with high and low sync
+% frequency-tuning with low and high sync:
+
+% -------------------------------------------------------------------------
+%% effect of membrane time constant on sync-dependence
+% 1. goal: show how high-sync dense spiking is affected by varying taum
+% ...
+
+% 2. goal: show flattening of curve when slow taum makes response sync-insensitive
+% synchrony-tuning for fast and slow taum (integration input time)
+% ...
+
+
+% -------------------------------------------------------------------------
+%% simulation controls
 tspan=[0 2000];  % [beg end], ms
 dt=.01;         % fixed time step, ms
 solver='rk1';   % numerical integration method {'rk1','rk2','rk4'}
 compile_flag=1; % whether to compile simulation
-simulator_options={'tspan',tspan,'solver',solver,'dt',dt,'compile_flag',compile_flag,'verbose_flag',1};
+save_data_flag=1;
+study_dir='study_vary_gEI';%[];
+% cluster_flag=0; plot_functions=[];
+cluster_flag=1; plot_functions={@PlotData,@PlotData,@PlotFR};
+plot_options={{'plot_type','rastergram'},{'plot_type','power','xlim',[0 100]},{'threshold',-10}};%,'bin_size',30,'bin_shift',10
+simulator_options={'save_data_flag',save_data_flag,'study_dir',study_dir,'tspan',tspan,'solver',solver,'dt',dt,'compile_flag',compile_flag,'verbose_flag',1,'cluster_flag',cluster_flag,'plot_functions',plot_functions,'plot_options',plot_options};
 mods=[];
 vary=[];
+% unix(sprintf('cat %s/pbsout/sim_job1.out',studyinfo.simulations(1).batch_dir));
 % -------------------------------------------------------------------------
 % data=SimulateModel(ApplyModifications(spec,mods),'vary',vary,simulator_options{:});  
 % PlotData(data);
 
 
+
+f=30; w=10; nspks=50; minIBI=max(w); meanIBI=2*minIBI;
+mods={'Ed','gAMPA',1e-3;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0};
+vary={'Es->FS','gAMPA',[0 .001 .01];'Es->FS','gNMDA',[0 .001 .01]};
+[~,studyinfo]=SimulateModel(ApplyModifications(spec,mods),'vary',vary,simulator_options{:});
+data=ImportData(studyinfo);
+PlotData(data,'plot_type','rastergram');
+
+if 0
+  study_dir='study_vary_gAMPAgNMDAe_1';%[];
+  simulator_options={'save_data_flag',save_data_flag,'study_dir',study_dir,'tspan',tspan,'solver',solver,'dt',dt,'compile_flag',compile_flag,'verbose_flag',1,'cluster_flag',cluster_flag,'plot_functions',plot_functions,'plot_options',plot_options};
+  f=30; w=10; nspks=50; minIBI=max(w); meanIBI=2*minIBI;
+  mods={'Es->FS','gAMPA',.001;'Es->FS','gNMDA',.001;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0};
+  vary={'Ed','gAMPA',[0 1e-3 1e-2 1e-1];'Ed','gNMDA',[0 1e-3 1e-2 1e-1]};
+  [~,studyinfo]=SimulateModel(ApplyModifications(spec,mods),'vary',vary,simulator_options{:});
+  data=ImportData(studyinfo);
+  PlotData(data,'plot_type','rastergram');
+end
+
 f=0; w=[10 10 20 20 30 30];
 f=0; w=[10:40:130]; minIBI=max(w); meanIBI=2*minIBI; nspks=100;
 f=0:10:60; w=10; nspks=100;
 f=10; w=[5 10 20]; nspks=40;
-vary={'Ed','gAMPA',1e-3;'Ed','fBURST1',f;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0};
-data=SimulateModel(spec,'vary',vary,simulator_options{:});
+vary={'Ed','gAMPA',1e-3;'Ed','fBURST1',f;'Ed','widthBURST1',w;'Ed','nspksBURST1',nspks;'Ed','meanIBI',meanIBI;'Ed','minIBI',minIBI;'Es->Ed','(gAMPA,gNMDA)',0;'FS->Es','gGABA',0};
+[data,studyinfo]=SimulateModel(spec,'vary',vary,simulator_options{:});
 PlotData(data,'plot_type','rastergram');
 PlotData(data,'variable','Es_V');
 PlotData(data,'variable','Ed_input');
